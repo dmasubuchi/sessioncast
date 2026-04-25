@@ -85,10 +85,9 @@ jobs:
         env:
           COMMIT_SHA: ${{ github.sha }}
         run: |
-          # Submit async (avoids log-streaming permission requirement)
+          # Submit async with SHA tag (--tag only accepts one value in simple build mode)
           BUILD_ID=$(gcloud builds submit apps/agents/ \
             --tag="${AGENTS_IMAGE}:${COMMIT_SHA}" \
-            --tag="${AGENTS_IMAGE}:latest" \
             --project="${GCP_PROJECT}" \
             --region="${GCP_REGION}" \
             --async \
@@ -110,6 +109,12 @@ jobs:
             esac
             sleep 15
           done
+
+          # Re-tag as latest after successful build
+          gcloud artifacts docker tags add \
+            "${AGENTS_IMAGE}:${COMMIT_SHA}" \
+            "${AGENTS_IMAGE}:latest" \
+            --project="${GCP_PROJECT}"
 
       - name: Deploy agents to Cloud Run
         env:
