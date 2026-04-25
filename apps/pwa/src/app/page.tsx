@@ -1,114 +1,161 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import { createSession, createEpisode } from "@/lib/firestore";
+import { collection, query, where, orderBy, onSnapshot } from "firebase/firestore";
+import { db } from "@/lib/firebase";
+import { createSession, type SessionNote } from "@/lib/firestore";
+import { loadSettings, type EventSettings } from "./settings/page";
 
-const SERIES_OPTIONS = [
-  { id: "google-radio",          label: "Google Radio" },
-  { id: "anthropic-radio",       label: "Anthropic Radio" },
-  { id: "hippo-radio",           label: "Hippo Radio" },
-];
+interface SessionWithId extends SessionNote {
+  id: string;
+}
 
-export default function Home() {
-  const [title, setTitle]   = useState("");
-  const [notes, setNotes]   = useState("");
-  const [seriesId, setSeries] = useState("google-radio");
-  const [loading, setLoading] = useState(false);
-  const [episodeId, setEpisodeId] = useState<string | null>(null);
+export default function TodayPage() {
+  const [settings, setSettings] = useState<EventSettings | null>(null);
+  const [sessions, setSessions] = useState<SessionWithId[]>([]);
+  const [showForm, setShowForm] = useState(false);
+  const [title, setTitle] = useState("");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!title || !notes) return;
-    setLoading(true);
+  useEffect(() => {
+    setSettings(loadSettings());
+  }, []);
 
-    const sessionId = await createSession({
-      title,
+  useEffect(() => {
+    if (!settings?.eventId) return;
+    const q = query(
+      collection(db, "sessions"),
+      where("eventId", "==", settings.eventId),
+      orderBy("createdAt", "desc")
+    );
+    return onSnapshot(q, (snap) => {
+      setSessions(snap.docs.map((d) => ({ id: d.id, ...(d.data() as SessionNote) })));
+    });
+  }, [settings?.eventId]);
+
+  const handleAddNote = async () => {
+    if (!title.trim() || !settings) return;
+    setSaving(true);
+    await createSession({
+      title: title.trim(),
       notes,
-      eventId: "manual",
+      eventId: settings.eventId,
       tags: [],
     });
-
-    const id = await createEpisode({
-      sessionId,
-      seriesId,
-      status: "pending",
-    });
-
-    setEpisodeId(id);
-    setLoading(false);
     setTitle("");
     setNotes("");
+    setShowForm(false);
+    setSaving(false);
+  };
+
+  if (!settings) {
+    return (
+      <div className="max-w-lg mx-auto px-4 py-16 text-center space-y-4">
+        <p className="text-2xl">👋</p>
+        <p className="font-semibold">はじめに、今のイベントを設定してください</p>
+        <Link href="/settings" className="inline-block bg-blue-600 text-white px-6 py-3 rounded-lg font-medium text-sm">
+          イベントを設定する →
+        </Link>
+      </div>
+    );
   }
 
   return (
-    <main className="max-w-2xl mx-auto px-4 py-10">
-      <div className="flex items-center justify-between mb-8">
-        <h1 className="text-3xl font-bold tracking-tight">SessionCast</h1>
-        <Link href="/episodes" className="text-sm text-blue-600 underline">
-          エピソード一覧 →
+    <div className="max-w-lg mx-auto px-4 py-6 space-y-5">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-bold leading-tight">{settings.eventName}</h1>
+          <p className="text-xs text-gray-400">{settings.seriesId}</p>
+        </div>
+        <Link href="/settings" className="text-xs text-gray-400 border rounded px-2 py-1">
+          変更
         </Link>
       </div>
 
-      <p className="text-gray-500 mb-6 text-sm">
-        セッションのメモを入力すると、AIがラジオ台本・ブログ・動画を自動生成します。
-      </p>
-
-      <form onSubmit={handleSubmit} className="space-y-5">
-        <div>
-          <label className="block text-sm font-medium mb-1">セッションタイトル</label>
+      {/* Quick add */}
+      {!showForm ? (
+        <div className="flex gap-2">
+          <button
+            onClick={() => { setShowForm(true); setTimeout(() => textareaRef.current?.focus(), 50); }}
+            className="flex-1 flex items-center gap-2 border-2 border-dashed border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-400 hover:border-blue-300 hover:text-blue-500 transition-colors"
+          >
+            <span className="text-lg">✏️</span>
+            メモを追加
+          </button>
+          <Link
+            href="/upload"
+            className="flex items-center gap-2 border-2 border-dashed border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-400 hover:border-blue-300 hover:text-blue-500 transition-colors"
+          >
+            <span className="text-lg">📷</span>
+          </Link>
+        </div>
+      ) : (
+        <div className="border rounded-xl p-4 space-y-3 shadow-sm">
           <input
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            placeholder="例: Agent Context Engineering for Production"
-            className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-            required
+            placeholder="セッションタイトル"
+            className="w-full text-sm font-medium border-b pb-2 focus:outline-none focus:border-blue-400"
           />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium mb-1">シリーズ</label>
-          <select
-            value={seriesId}
-            onChange={(e) => setSeries(e.target.value)}
-            className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-          >
-            {SERIES_OPTIONS.map((s) => (
-              <option key={s.id} value={s.id}>{s.label}</option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium mb-1">メモ</label>
           <textarea
+            ref={textareaRef}
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            rows={10}
-            placeholder="セッションで聞いたこと、気になったキーワード、引用など何でも..."
-            className="w-full border rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-400 resize-y"
-            required
+            placeholder="メモ、キーワード、気になったこと…"
+            rows={5}
+            className="w-full text-sm font-mono resize-none focus:outline-none"
           />
-        </div>
-
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full bg-blue-600 text-white rounded-lg py-3 font-semibold text-sm hover:bg-blue-700 disabled:opacity-50 transition-colors"
-        >
-          {loading ? "送信中..." : "生成開始 →"}
-        </button>
-      </form>
-
-      {episodeId && (
-        <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg text-sm">
-          エピソードを登録しました。
-          <Link href="/episodes" className="ml-2 text-blue-600 underline">
-            進捗を確認 →
-          </Link>
+          <div className="flex gap-2 justify-end">
+            <button
+              onClick={() => { setShowForm(false); setTitle(""); setNotes(""); }}
+              className="text-sm text-gray-400 px-3 py-1"
+            >
+              キャンセル
+            </button>
+            <button
+              onClick={handleAddNote}
+              disabled={saving || !title.trim()}
+              className="text-sm bg-blue-600 text-white px-4 py-1.5 rounded-lg disabled:opacity-40"
+            >
+              {saving ? "保存中…" : "保存"}
+            </button>
+          </div>
         </div>
       )}
-    </main>
+
+      {/* Sessions list */}
+      {sessions.length === 0 ? (
+        <p className="text-sm text-gray-400 text-center py-8">
+          まだメモがありません。セッション中にどんどん追加してください。
+        </p>
+      ) : (
+        <div className="space-y-2">
+          <p className="text-xs text-gray-400">{sessions.length}件のメモ</p>
+          {sessions.map((s) => (
+            <div key={s.id} className="border rounded-xl p-3 space-y-1">
+              <p className="text-sm font-medium">{s.title}</p>
+              {s.notes && (
+                <p className="text-xs text-gray-500 line-clamp-2">{s.notes}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Review CTA */}
+      {sessions.length >= 2 && (
+        <Link
+          href="/review"
+          className="block w-full text-center bg-indigo-600 text-white py-3 rounded-xl font-medium text-sm"
+        >
+          AIにまとめを確認してもらう →
+        </Link>
+      )}
+    </div>
   );
 }

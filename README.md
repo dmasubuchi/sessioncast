@@ -136,6 +136,36 @@ Fork this repo and you can run it with **your own voice clone**.
 
 ---
 
+## Pre-event session planning
+
+Before you go to a conference, drop the session schedule into SessionCast. Gemini researches the speakers and topics for you, then returns a prioritized schedule with pre-session notes.
+
+```
+  PWA /plan page
+       │  paste session list (free text, CSV, or URL)
+       │  select your interest tags
+       │  describe your goals for the event
+       ▼
+  Session Planner Agent  ← Gemini 2.5 Pro + google_search
+       │  researches speakers and topics
+       │  detects schedule conflicts
+       │  ranks sessions by relevance
+       ▼
+  Prioritized schedule
+       │  recommended sessions + "why"
+       │  conflict resolution suggestions
+       │  pre-session notes → saved as episode seed
+       ▼
+  Conference day
+       add your live notes on top of the pre-session base
+```
+
+The session planner is designed to swap in **Google Deep Research API** when it becomes available — the agent interface stays the same, one tool change.
+
+Works great with Google Cloud Next, Google I/O, and any event that publishes a session catalog.
+
+---
+
 ## Photo upload + AI analysis (A2A)
 
 SessionCast can analyze photos you take at a conference — slides, venue atmosphere, networking events — and weave that context into the script.
@@ -296,9 +326,59 @@ This episode is planned to be played at **Google Cloud Next '27**:
 | Local worker (VOICEVOX) | ✅ running | local_worker.py |
 | Image Analyzer A2A service | ✅ built | Gemini Vision |
 | Photo upload UI (/upload) | ✅ built | Firebase Storage |
+| Pre-event session planner (/plan) | ✅ built | Gemini + google_search |
 | Remotion video renderer | 🚧 in progress | |
 | YouTube auto-publish | 📋 planned | |
 | Looker Studio dashboard | 📋 planned | |
+
+---
+
+## From personal PoC to enterprise — the migration path
+
+SessionCast started as a one-person experiment: Claude Code, a Las Vegas hotel room, and conference notes that needed to become something more memorable.
+
+The PoC ran entirely through Claude Code — natural language instructions, almost no code written by hand. That worked because there was one operator (me) and one fully trusted collaborator (the AI). No access controls needed. No audit trails needed. Just fast iteration.
+
+```
+  PoC: one human, one AI, one hotel room
+  ─────────────────────────────────────
+  "build me a TTS worker"  →  tts_worker.py  ✓
+  "switch to ElevenLabs"   →  engine swap    ✓
+  "Cloud Build is failing" →  fix & commit   ✓
+
+  total code written by human: ≈ 0 lines
+```
+
+But the same pipeline needs to work at enterprise scale: multiple teams, multiple series, Workload Identity instead of personal credentials, Cloud Audit Log instead of conversation history, prompt injection defenses instead of trust.
+
+**This is the design challenge we're documenting and solving with SessionCast.**
+
+### PoC model vs Enterprise model
+
+The core difference is *who controls the parameters, and how*:
+
+| Parameter | PoC (Kukuri model) | Enterprise |
+|---|---|---|
+| Who can change it | Matthew (everything) | Role-based hierarchy |
+| How to change | Natural language chat | Structured form + approval flow |
+| Memory location | Claude's conversation context | Firestore (persistent, tenant-isolated) |
+| Parameter format | Free text | Structured enum + template |
+| Change tracking | None | Cloud Audit Log (full history) |
+| Prompt reflection | Direct injection | Template expansion (injection-proof) |
+
+In the PoC, the "secretary" (Kukuri) could adjust any parameter because there was exactly one trusted human in the loop. In enterprise, parameters are locked to structured types — free text from users never flows directly into prompts. The policy hierarchy looks like this:
+
+```
+  Platform defaults
+       ↓ override
+  Organization policy   (e.g., approved voice engines only)
+       ↓ override
+  Series config         (e.g., Kukuri voice ID for this show)
+       ↓ override
+  Episode params        (e.g., guest speaker language)
+```
+
+This repo is the living case study: start with Claude Code on your laptop, scale to Vertex AI on Google Cloud.
 
 ---
 
