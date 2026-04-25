@@ -3,12 +3,6 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
-const SERIES_OPTIONS = [
-  { id: "google-radio",      label: "Google Radio" },
-  { id: "anthropic-radio",   label: "Anthropic Radio" },
-  { id: "hippo-radio",       label: "Hippo Radio" },
-  { id: "snk-radio",         label: "SNK Radio" },
-];
 
 export interface EventSettings {
   eventName: string;
@@ -66,16 +60,15 @@ export default function SettingsPage() {
       </div>
 
       <div className="space-y-1">
-        <label className="text-sm font-medium">ラジオシリーズ</label>
-        <select
+        <label className="text-sm font-medium">ラジオシリーズID</label>
+        <input
+          type="text"
           value={seriesId}
-          onChange={(e) => setSeriesId(e.target.value)}
-          className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-400 focus:outline-none"
-        >
-          {SERIES_OPTIONS.map((s) => (
-            <option key={s.id} value={s.id}>{s.label}</option>
-          ))}
-        </select>
+          onChange={(e) => setSeriesId(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"))}
+          placeholder="例: google-radio"
+          className="w-full border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-blue-400 focus:outline-none"
+        />
+        <p className="text-xs text-gray-400">小文字・数字・ハイフンのみ使用できます</p>
       </div>
 
       <button
