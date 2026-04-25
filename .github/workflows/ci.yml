@@ -85,11 +85,31 @@ jobs:
         env:
           COMMIT_SHA: ${{ github.sha }}
         run: |
-          gcloud builds submit apps/agents/ \
+          # Submit async (avoids log-streaming permission requirement)
+          BUILD_ID=$(gcloud builds submit apps/agents/ \
             --tag="${AGENTS_IMAGE}:${COMMIT_SHA}" \
             --tag="${AGENTS_IMAGE}:latest" \
             --project="${GCP_PROJECT}" \
-            --region="${GCP_REGION}"
+            --region="${GCP_REGION}" \
+            --async \
+            --format='value(id)')
+          echo "Build ID: ${BUILD_ID}"
+
+          # Poll until complete
+          while true; do
+            STATUS=$(gcloud builds describe "${BUILD_ID}" \
+              --region="${GCP_REGION}" \
+              --project="${GCP_PROJECT}" \
+              --format='value(status)')
+            echo "Status: ${STATUS}"
+            case "${STATUS}" in
+              SUCCESS) echo "Build succeeded."; break ;;
+              FAILURE|CANCELLED|TIMEOUT|INTERNAL_ERROR)
+                echo "Build failed: ${STATUS}"
+                exit 1 ;;
+            esac
+            sleep 15
+          done
 
       - name: Deploy agents to Cloud Run
         env:
