@@ -50,41 +50,7 @@ jobs:
           GCP_PROJECT: ${{ env.GCP_PROJECT }}
         run: |
           pip install -q google-cloud-aiplatform
-
-          python3 << 'PYEOF'
-          import os, sys
-          import vertexai
-          from vertexai.generative_models import GenerativeModel
-
-          diff = open("/tmp/pr-diff.txt").read()[:15000]
-          if not diff.strip():
-              print("No relevant diff found.")
-              sys.exit(0)
-
-          vertexai.init(project=os.environ["GCP_PROJECT"], location="us-central1")
-          model = GenerativeModel("gemini-2.5-pro")
-
-          PROMPT_PREFIX = """You are a senior engineer reviewing a pull request for SessionCast,
-an AI content pipeline built on Google Cloud (Vertex AI ADK, Cloud Run, Firebase).
-
-Review this diff and provide concise feedback on:
-1. Security issues (critical, must fix)
-2. Logic bugs (high, should fix)
-3. Code quality (medium, consider fixing)
-4. Positive observations
-
-Diff:
-"""
-          PROMPT_SUFFIX = """
-
-Format your response as markdown. Be concise and actionable.
-Start with a one-line summary like: "✅ Looks good" or "⚠️ N issues found"
-"""
-          response = model.generate_content(PROMPT_PREFIX + diff + PROMPT_SUFFIX)
-          print(response.text)
-          with open("/tmp/review.md", "w") as f:
-              f.write(response.text)
-          PYEOF
+          python3 .github/scripts/gemini_review.py
 
       - name: Post review comment
         env:
