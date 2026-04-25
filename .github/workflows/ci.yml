@@ -16,6 +16,7 @@ env:
   GCP_REGION: ${{ vars.GCP_REGION }}
   AGENTS_IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/sessioncast/agents
   TTS_IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/sessioncast/tts-worker
+  IMG_ANALYZER_IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/sessioncast/image-analyzer
 
 jobs:
   # --- Job 1: Build & Type Check (every PR and push) -------------------------
@@ -175,6 +176,58 @@ jobs:
             --cpu=2 \
             --set-env-vars="GCP_PROJECT=${GCP_PROJECT},WORKER_ID=cloud-run" \
             --set-secrets="ELEVENLABS_API_KEY=sessioncast-elevenlabs-api-key:latest" \
+            --quiet
+
+      - name: Build & push Image Analyzer image via Cloud Build
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          BUILD_ID=$(gcloud builds submit apps/image-analyzer/ \
+            --tag="${IMG_ANALYZER_IMAGE}:${COMMIT_SHA}" \
+            --project="${GCP_PROJECT}" \
+            --region="${GCP_REGION}" \
+            --async \
+            --format='value(id)')
+          echo "Build ID: ${BUILD_ID}"
+          while true; do
+            STATUS=$(gcloud builds describe "${BUILD_ID}" \
+              --region="${GCP_REGION}" \
+              --project="${GCP_PROJECT}" \
+              --format='value(status)')
+            echo "Status: ${STATUS}"
+            case "${STATUS}" in
+              SUCCESS) echo "Build succeeded."; break ;;
+              FAILURE|CANCELLED|TIMEOUT|INTERNAL_ERROR)
+                echo "Build failed: ${STATUS}"; exit 1 ;;
+            esac
+            sleep 15
+          done
+          gcloud artifacts docker tags add \
+            "${IMG_ANALYZER_IMAGE}:${COMMIT_SHA}" \
+            "${IMG_ANALYZER_IMAGE}:latest" \
+            --project="${GCP_PROJECT}"
+
+      - name: Deploy Image Analyzer to Cloud Run
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          SERVICE_URL=$(gcloud run deploy sessioncast-image-analyzer \
+            --image="${IMG_ANALYZER_IMAGE}:${COMMIT_SHA}" \
+            --region="${GCP_REGION}" \
+            --project="${GCP_PROJECT}" \
+            --platform=managed \
+            --no-allow-unauthenticated \
+            --memory=1Gi \
+            --cpu=1 \
+            --set-env-vars="GCP_PROJECT=${GCP_PROJECT},GCP_REGION=${GCP_REGION}" \
+            --format='value(status.url)' \
+            --quiet)
+          echo "Image Analyzer URL: ${SERVICE_URL}"
+          # Inject URL into agents service so it can call via A2A
+          gcloud run services update sessioncast-agents \
+            --region="${GCP_REGION}" \
+            --project="${GCP_PROJECT}" \
+            --update-env-vars="IMAGE_ANALYZER_URL=${SERVICE_URL}" \
             --quiet
 
       - name: Download PWA artifact

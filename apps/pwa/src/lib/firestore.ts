@@ -41,10 +41,20 @@ export interface SessionNote {
   createdAt?: DocumentData;
 }
 
+export type ImageCategory = "slide" | "atmosphere" | "general";
+
+export interface EpisodeImage {
+  gcs_uri: string;
+  type: ImageCategory;
+  filename: string;
+  uploaded_at: DocumentData;
+}
+
 export interface Episode {
   sessionId: string;
   seriesId: string;
   status: PipelineStatus;
+  images?: EpisodeImage[];
   script?: string;
   audioUrl?: string;
   videoUrl?: string;
@@ -83,6 +93,21 @@ export async function updateEpisodeStatus(
   await updateDoc(doc(db, "episodes", episodeId), {
     status,
     ...extra,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function addImagesToEpisode(
+  episodeId: string,
+  newImages: Omit<EpisodeImage, "uploaded_at">[]
+): Promise<void> {
+  const { arrayUnion } = await import("firebase/firestore");
+  const entries = newImages.map((img) => ({
+    ...img,
+    uploaded_at: serverTimestamp(),
+  }));
+  await updateDoc(doc(db, "episodes", episodeId), {
+    images: arrayUnion(...entries),
     updatedAt: serverTimestamp(),
   });
 }
