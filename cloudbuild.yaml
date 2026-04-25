@@ -1,0 +1,81 @@
+steps:
+  # --- Build & push agent service ---
+  - name: "gcr.io/cloud-builders/docker"
+    id: build-agents
+    args:
+      - build
+      - -t
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/sessioncast/agents:$SHORT_SHA"
+      - apps/agents/
+
+  - name: "gcr.io/cloud-builders/docker"
+    id: push-agents
+    args:
+      - push
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/sessioncast/agents:$SHORT_SHA"
+    waitFor: ["build-agents"]
+
+  # --- Deploy agent service to Cloud Run ---
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: deploy-agents
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - sessioncast-agents
+      - --image=asia-northeast1-docker.pkg.dev/$PROJECT_ID/sessioncast/agents:$SHORT_SHA
+      - --region=asia-northeast1
+      - --platform=managed
+      - --no-allow-unauthenticated
+      - --memory=2Gi
+      - --cpu=2
+      - --set-env-vars=GCP_PROJECT=$PROJECT_ID
+    waitFor: ["push-agents"]
+
+  # --- Build & push TTS worker ---
+  - name: "gcr.io/cloud-builders/docker"
+    id: build-tts
+    args:
+      - build
+      - -t
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/sessioncast/tts-worker:$SHORT_SHA"
+      - apps/tts-worker/
+
+  - name: "gcr.io/cloud-builders/docker"
+    id: push-tts
+    args:
+      - push
+      - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/sessioncast/tts-worker:$SHORT_SHA"
+    waitFor: ["build-tts"]
+
+  # --- Deploy PWA to Firebase Hosting ---
+  - name: "node:20"
+    id: build-pwa
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        cd apps/pwa
+        npm ci
+        npm run build
+
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: deploy-pwa
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        npm install -g firebase-tools
+        cd apps/pwa
+        firebase deploy --only hosting --project $PROJECT_ID --non-interactive
+    waitFor: ["build-pwa"]
+
+images:
+  - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/sessioncast/agents:$SHORT_SHA"
+  - "asia-northeast1-docker.pkg.dev/$PROJECT_ID/sessioncast/tts-worker:$SHORT_SHA"
+
+substitutions:
+  _REGION: asia-northeast1
+
+options:
+  logging: CLOUD_LOGGING_ONLY
