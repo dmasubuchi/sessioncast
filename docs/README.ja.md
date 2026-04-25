@@ -4,7 +4,7 @@
 
 **[🇺🇸 English README](../README.md)** | [セットアップガイド（日本語）](SETUP.ja.md)
 
-![SessionCast hero illustration](../docs/images/hero-sessioncast.png)
+![SessionCast hero illustration](images/hero-sessioncast.png)
 <!-- 🍌 Nanobanana prompt: a journalist at a conference takes handwritten notes, and those notes transform into radio waves, then into a podcast, then into a YouTube video — shown as a flowing river of data in warm golden tones. 21:9 cinematic -->
 
 ---
@@ -42,7 +42,7 @@
 
 2026年4月22〜24日、**Google Cloud Next '26**（ラスベガス）に参加してきました。
 
-![Google Cloud Next '26 impressions](docs/images/next26-vibes.png)
+![Google Cloud Next '26 impressions](images/next26-vibes.png)
 <!-- 🍌 Nanobanana prompt: a person taking notes at a massive tech conference, screens behind them showing AI demos, the atmosphere energetic and a bit overwhelming. Warm evening lighting. 16:9 -->
 
 400社以上のブース。PlayStation × Geminiのゲームキャラクター音声デモ。「数週間かかっていた作業をワンクリックで」と言い切ったデモ。毎日10時間以上のセッション漬け。
@@ -177,7 +177,7 @@ SessionCast 開発で最も実験的だったのは「**コードをほぼ書か
 
 ## 精度の複利問題 — なぜ「計測」が重要か
 
-![Compound accuracy diagram](docs/images/compound-accuracy.png)
+![Compound accuracy diagram](images/compound-accuracy.png)
 <!-- 🍌 Nanobanana prompt: three dominoes each labeled "95%", falling into each other and producing an output labeled "85.7%". Clean, minimal infographic style with red accents. 4:3 -->
 
 Google Cloud Next '26 のセッションで学んだ重要な概念です。
@@ -215,7 +215,7 @@ SessionCast はこれを計測可能にします:
 
 ## AI-Powered CI/CD — コーディングエージェントが PR をレビュー
 
-![CI/CD pipeline illustration](docs/images/cicd-review.png)
+![CI/CD pipeline illustration](images/cicd-review.png)
 <!-- 🍌 Nanobanana prompt: a pull request icon being carefully examined by two robot reviewers, one with Google colors, one with Anthropic colors. Clean GitHub-style interface in background. 16:9 -->
 
 このリポジトリへのすべての PR は **Gemini 2.5 Pro が自動レビュー**します。
@@ -324,5 +324,5 @@ MIT — [LICENSE](LICENSE) 参照
 *Daisuke Masubuchi / [Papukaija LLC](https://papukaija.jp/)*  
 *Google Cloud Next '26 → '27 ケーススタディとして開発中*
 
-![Footer illustration](docs/images/footer-pipeline.png)
+![Footer illustration](images/footer-pipeline.png)
 <!-- 🍌 Nanobanana prompt: a warm and satisfying final frame — a radio tower at sunset, with data streams flowing upward becoming sound waves, becoming stars. 21:9 cinematic -->
