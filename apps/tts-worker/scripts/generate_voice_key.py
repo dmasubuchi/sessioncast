@@ -41,16 +41,36 @@ def _get_access_token() -> str:
     return creds.token
 
 
-def generate_voice_cloning_key(consent_path: str, reference_path: str) -> str:
+AUDIO_CONFIG = {"audio_encoding": "LINEAR16", "sample_rate_hertz": 24000}
+
+# Consent statement must match what was recorded in consent.wav (Japanese)
+CONSENT_SCRIPT_JA = (
+    "私はこの音声の所有者であり、"
+    "Googleがこの音声を使用して音声合成モデルを作成することを承認します。"
+)
+
+
+def generate_voice_cloning_key(consent_path: str, reference_path: str, project: str) -> str:
     payload = {
-        "consent_audio_config": {"audio_content": _read_wav_as_b64(consent_path)},
-        "reference_audio": [{"audio_content": _read_wav_as_b64(reference_path)}],
+        "reference_audio": {
+            "audio_config": AUDIO_CONFIG,
+            "content": _read_wav_as_b64(reference_path),
+        },
+        "voice_talent_consent": {
+            "audio_config": AUDIO_CONFIG,
+            "content": _read_wav_as_b64(consent_path),
+        },
+        "consent_script": CONSENT_SCRIPT_JA,
+        "language_code": "ja-JP",
     }
     resp = httpx.post(
         TTS_ENDPOINT,
         json=payload,
-        headers={"Authorization": f"Bearer {_get_access_token()}"},
-        timeout=30,
+        headers={
+            "Authorization": f"Bearer {_get_access_token()}",
+            "x-goog-user-project": project,
+        },
+        timeout=60,
     )
     resp.raise_for_status()
     result = resp.json()
@@ -98,7 +118,7 @@ def main() -> None:
         sys.exit(1)
 
     print("Calling voices:generateVoiceCloningKey ...")
-    key = generate_voice_cloning_key(args.consent, args.reference)
+    key = generate_voice_cloning_key(args.consent, args.reference, args.project)
     print("voiceCloningKey received.")
 
     save_to_secret_manager(args.project, key)

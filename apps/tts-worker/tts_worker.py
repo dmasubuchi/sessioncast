@@ -1,13 +1,14 @@
 """TTS Worker — FastAPI service that synthesizes audio for a SessionCast episode.
 
 Receives Pub/Sub push for `status == "script_ready"`, downloads script.json from
-GCS, synthesizes each line (VOICEVOX for くくり, Chirp 3 for Matthew), merges into
-audio.wav, and uploads back to GCS.
+GCS, synthesizes each line (VOICEVOX for くくり, ElevenLabs IVC for Matthew), merges
+into audio.wav, and uploads back to GCS.
 
 Environment variables:
-    GCP_PROJECT       — GCP project ID (required)
-    VOICEVOX_URL      — VOICEVOX service URL, default http://localhost:50021
+    GCP_PROJECT         — GCP project ID (required)
+    VOICEVOX_URL        — VOICEVOX service URL, default http://localhost:50021
     VOICEVOX_SPEAKER_ID — VOICEVOX speaker ID for くくり, default 1
+    ELEVENLABS_API_KEY  — ElevenLabs API key (optional; falls back to Secret Manager)
 """
 
 import asyncio
@@ -22,16 +23,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 import httpx
+from elevenlabs.client import ElevenLabs
 from fastapi import FastAPI, HTTPException, Request
 from google.cloud import firestore, pubsub_v1, secretmanager, storage
-from google.cloud.texttospeech_v1beta1 import (
-    AudioConfig,
-    AudioEncoding,
-    SynthesisInput,
-    TextToSpeechClient,
-    VoiceCloneParams,
-    VoiceSelectionParams,
-)
 from pydub import AudioSegment
 
 logging.basicConfig(level=logging.INFO)
@@ -41,8 +35,9 @@ GCP_PROJECT = os.environ["GCP_PROJECT"]
 VOICEVOX_URL = os.environ.get("VOICEVOX_URL", "http://localhost:50021")
 VOICEVOX_SPEAKER_ID = int(os.environ.get("VOICEVOX_SPEAKER_ID", "1"))
 MEDIA_BUCKET = f"{GCP_PROJECT}-media"
-SECRET_NAME = f"projects/{GCP_PROJECT}/secrets/sessioncast-matthew-voice-key/versions/latest"
+ELEVENLABS_VOICE_SECRET = f"projects/{GCP_PROJECT}/secrets/sessioncast-matthew-elevenlabs-voice-id/versions/latest"
 PIPELINE_TOPIC = f"projects/{GCP_PROJECT}/topics/sessioncast-pipeline-events"
+ELEVENLABS_MODEL = "eleven_multilingual_v2"
 
 # Allowlist for episode_id values (prevents path traversal)
 _EPISODE_ID_RE = re.compile(r"^[a-z0-9\-]{1,80}$")
@@ -51,8 +46,8 @@ app = FastAPI()
 _executor = ThreadPoolExecutor(max_workers=8)
 
 # Cached on first use
-_voice_key_cache: Optional[str] = None
-_tts_client: Optional[TextToSpeechClient] = None
+_elevenlabs_voice_id_cache: Optional[str] = None
+_elevenlabs_client_cache: Optional[ElevenLabs] = None
 
 
 @dataclass
@@ -63,20 +58,27 @@ class ScriptLine:
     pause_after_ms: int = 300
 
 
-def _get_voice_cloning_key() -> str:
-    global _voice_key_cache
-    if _voice_key_cache is None:
-        client = secretmanager.SecretManagerServiceClient()
-        resp = client.access_secret_version(request={"name": SECRET_NAME})
-        _voice_key_cache = resp.payload.data.decode("utf-8")
-    return _voice_key_cache
+def _get_elevenlabs_voice_id() -> str:
+    global _elevenlabs_voice_id_cache
+    if _elevenlabs_voice_id_cache is None:
+        sm = secretmanager.SecretManagerServiceClient()
+        resp = sm.access_secret_version(request={"name": ELEVENLABS_VOICE_SECRET})
+        _elevenlabs_voice_id_cache = resp.payload.data.decode("utf-8")
+    return _elevenlabs_voice_id_cache
 
 
-def _get_tts_client() -> TextToSpeechClient:
-    global _tts_client
-    if _tts_client is None:
-        _tts_client = TextToSpeechClient()
-    return _tts_client
+def _get_elevenlabs_client() -> ElevenLabs:
+    global _elevenlabs_client_cache
+    if _elevenlabs_client_cache is None:
+        api_key = os.environ.get("ELEVENLABS_API_KEY") or _get_secret("sessioncast-elevenlabs-api-key")
+        _elevenlabs_client_cache = ElevenLabs(api_key=api_key)
+    return _elevenlabs_client_cache
+
+
+def _get_secret(secret_id: str) -> str:
+    sm = secretmanager.SecretManagerServiceClient()
+    name = f"projects/{GCP_PROJECT}/secrets/{secret_id}/versions/latest"
+    return sm.access_secret_version(request={"name": name}).payload.data.decode("utf-8")
 
 
 def _synthesize_voicevox(text: str) -> bytes:
@@ -96,24 +98,28 @@ def _synthesize_voicevox(text: str) -> bytes:
         return synth_resp.content
 
 
-def _synthesize_chirp3(text: str) -> bytes:
-    client = _get_tts_client()
-    key = _get_voice_cloning_key()
-    response = client.synthesize_speech(
-        input=SynthesisInput(text=text),
-        voice=VoiceSelectionParams(
-            voice_clone=VoiceCloneParams(voice_cloning_key=key)
-        ),
-        audio_config=AudioConfig(audio_encoding=AudioEncoding.LINEAR16),
+def _synthesize_elevenlabs(text: str) -> bytes:
+    client = _get_elevenlabs_client()
+    voice_id = _get_elevenlabs_voice_id()
+    audio_chunks = client.text_to_speech.convert(
+        voice_id=voice_id,
+        text=text,
+        model_id=ELEVENLABS_MODEL,
+        output_format="pcm_24000",
     )
-    return response.audio_content
+    raw_pcm = b"".join(audio_chunks)
+    # Wrap raw PCM (24kHz, 16-bit, mono) in a WAV header via pydub
+    segment = AudioSegment(raw_pcm, sample_width=2, frame_rate=24000, channels=1)
+    buf = io.BytesIO()
+    segment.export(buf, format="wav")
+    return buf.getvalue()
 
 
 def _synthesize_line(line: ScriptLine) -> bytes:
     if line.speaker == "kukuri":
         wav_bytes = _synthesize_voicevox(line.text)
     elif line.speaker == "matthew":
-        wav_bytes = _synthesize_chirp3(line.text)
+        wav_bytes = _synthesize_elevenlabs(line.text)
     else:
         log.warning("Unknown speaker %s, skipping line %d", line.speaker, line.index)
         return b""
