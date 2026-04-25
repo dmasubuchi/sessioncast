@@ -1,0 +1,135 @@
+# AI-Powered PR Review — "Accelerate CI/CD with Coding Agents" pattern
+# Gemini CLI reviews diffs on every PR; Claude Code handles /fix commands
+#
+# Triggers:
+#   - PR opened/updated → Gemini reviews the diff automatically
+#   - PR comment "/fix" → Claude Code fixes the issue and commits back
+
+name: AI PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+
+jobs:
+  # --- Gemini auto-review on PR open/update --------------------------------
+  gemini-review:
+    name: Gemini Code Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git diff "${BASE_SHA}...${HEAD_SHA}" \
+            -- '*.py' '*.ts' '*.tsx' '*.tf' 'Dockerfile' \
+            > /tmp/pr-diff.txt
+          wc -l /tmp/pr-diff.txt
+
+      - name: Run Gemini CLI review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          pip install -q google-genai
+
+          python3 - << 'PYEOF'
+          import os, json
+          from google import genai
+
+          diff = open("/tmp/pr-diff.txt").read()[:15000]  # truncate for token budget
+          if not diff.strip():
+              print("No relevant diff found.")
+              exit(0)
+
+          client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+          response = client.models.generate_content(
+              model="gemini-2.5-pro",
+              contents=f"""You are a senior engineer reviewing a pull request for SessionCast,
+          an AI content pipeline built on Google Cloud (Vertex AI ADK, Cloud Run, Firebase).
+
+          Review this diff and provide concise feedback on:
+          1. Security issues (critical, must fix)
+          2. Logic bugs (high, should fix)
+          3. Code quality (medium, consider fixing)
+          4. Positive observations
+
+          Diff:
+          {diff}
+
+          Format your response as markdown. Be concise and actionable.
+          Start with a one-line summary like: "✅ Looks good" or "⚠️ N issues found"
+          """,
+          )
+          print(response.text)
+          with open("/tmp/review.md", "w") as f:
+              f.write(response.text)
+          PYEOF
+
+      - name: Post review comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          REVIEW=$(cat /tmp/review.md 2>/dev/null || echo "Review unavailable.")
+          BODY="## Gemini Code Review 🤖\n\n${REVIEW}\n\n---\n*Powered by Gemini 2.5 Pro via SessionCast CI/CD*"
+          gh pr comment "${PR_NUMBER}" --repo "${REPO}" --body "$(printf '%b' "${BODY}")"
+
+  # --- Claude Code fix on /fix comment --------------------------------------
+  claude-fix:
+    name: Claude Code Auto-Fix
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      startsWith(github.event.comment.body, '/fix')
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Extract fix instruction
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          # Safe: extract instruction from env var, not directly from expression
+          echo "${COMMENT_BODY#/fix}" | head -c 500 > /tmp/fix-instruction.txt
+          cat /tmp/fix-instruction.txt
+
+      - name: Run Claude Code fix
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          INSTRUCTION=$(cat /tmp/fix-instruction.txt)
+          claude --print "Fix the following issue in this codebase: ${INSTRUCTION}" \
+            --allowedTools "Edit,Read,Bash" \
+            --output-format text
+
+      - name: Commit and push fixes
+        env:
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          git config user.name "SessionCast Bot"
+          git config user.email "bot@sessioncast.dev"
+          git add -A
+          git diff --staged --quiet || \
+            git commit -m "fix: auto-fix via Claude Code (/fix command)" && \
+            git push origin "${PR_HEAD_REF}"
