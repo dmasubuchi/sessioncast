@@ -52,3 +52,8 @@ logs/
 config/papukaija/
 personas/
 voice-models/
+
+# Voice clone audio files (personal recordings — never commit)
+apps/tts-worker/scripts/*.wav
+apps/tts-worker/scripts/*.m4a
+apps/tts-worker/scripts/*.mp3

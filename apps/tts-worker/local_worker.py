@@ -35,7 +35,7 @@ def _find_queued_episodes() -> list[str]:
     db = firestore.Client(project=GCP_PROJECT)
     snaps = (
         db.collection("episodes")
-        .where("status", "==", "script_ready")
+        .where(filter=firestore.FieldFilter("status", "==", "script_ready"))
         .limit(5)
         .stream()
     )
