@@ -12,9 +12,9 @@ on:
     branches: [main]
 
 env:
-  GCP_PROJECT: almeisan-adk-sandbox
-  GCP_REGION: asia-northeast1
-  AGENTS_IMAGE: asia-northeast1-docker.pkg.dev/almeisan-adk-sandbox/sessioncast/agents
+  GCP_PROJECT: ${{ vars.GCP_PROJECT }}
+  GCP_REGION: ${{ vars.GCP_REGION }}
+  AGENTS_IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/sessioncast/agents
 
 jobs:
   # --- Job 1: Build & Type Check (every PR and push) -------------------------
@@ -42,12 +42,12 @@ jobs:
         working-directory: apps/pwa
         env:
           NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
-          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: almeisan-adk-sandbox.firebaseapp.com
-          NEXT_PUBLIC_FIREBASE_PROJECT_ID: almeisan-adk-sandbox
-          NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: almeisan-adk-sandbox.firebasestorage.app
-          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "878394613588"
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ vars.GCP_PROJECT }}.firebaseapp.com
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ vars.GCP_PROJECT }}
+          NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ vars.GCP_PROJECT }}.firebasestorage.app
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.FIREBASE_MESSAGING_SENDER_ID }}
           NEXT_PUBLIC_FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
-          NEXT_PUBLIC_GCP_PROJECT: almeisan-adk-sandbox
+          NEXT_PUBLIC_GCP_PROJECT: ${{ vars.GCP_PROJECT }}
         run: npm run build
 
       - name: Upload PWA artifact
@@ -142,5 +142,5 @@ jobs:
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          projectId: ${{ env.GCP_PROJECT }}
+          projectId: ${{ vars.GCP_PROJECT }}
           channelId: live

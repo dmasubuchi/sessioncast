@@ -47,7 +47,7 @@ jobs:
 
       - name: Run Gemini review via Vertex AI
         env:
-          GCP_PROJECT: ${{ env.GCP_PROJECT }}
+          GCP_PROJECT: ${{ vars.GCP_PROJECT }}
         run: |
           pip install -q google-cloud-aiplatform
           python3 .github/scripts/gemini_review.py
