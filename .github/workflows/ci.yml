@@ -15,6 +15,7 @@ env:
   GCP_PROJECT: ${{ vars.GCP_PROJECT }}
   GCP_REGION: ${{ vars.GCP_REGION }}
   AGENTS_IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/sessioncast/agents
+  TTS_IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/sessioncast/tts-worker
 
 jobs:
   # --- Job 1: Build & Type Check (every PR and push) -------------------------
@@ -129,6 +130,51 @@ jobs:
             --memory=2Gi \
             --cpu=2 \
             --set-env-vars="GCP_PROJECT=${GCP_PROJECT}" \
+            --quiet
+
+      - name: Build & push TTS worker image via Cloud Build
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          BUILD_ID=$(gcloud builds submit apps/tts-worker/ \
+            --tag="${TTS_IMAGE}:${COMMIT_SHA}" \
+            --project="${GCP_PROJECT}" \
+            --region="${GCP_REGION}" \
+            --async \
+            --format='value(id)')
+          echo "Build ID: ${BUILD_ID}"
+          while true; do
+            STATUS=$(gcloud builds describe "${BUILD_ID}" \
+              --region="${GCP_REGION}" \
+              --project="${GCP_PROJECT}" \
+              --format='value(status)')
+            echo "Status: ${STATUS}"
+            case "${STATUS}" in
+              SUCCESS) echo "Build succeeded."; break ;;
+              FAILURE|CANCELLED|TIMEOUT|INTERNAL_ERROR)
+                echo "Build failed: ${STATUS}"; exit 1 ;;
+            esac
+            sleep 15
+          done
+          gcloud artifacts docker tags add \
+            "${TTS_IMAGE}:${COMMIT_SHA}" \
+            "${TTS_IMAGE}:latest" \
+            --project="${GCP_PROJECT}"
+
+      - name: Deploy TTS worker to Cloud Run
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          gcloud run deploy sessioncast-tts-worker \
+            --image="${TTS_IMAGE}:${COMMIT_SHA}" \
+            --region="${GCP_REGION}" \
+            --project="${GCP_PROJECT}" \
+            --platform=managed \
+            --no-allow-unauthenticated \
+            --memory=2Gi \
+            --cpu=2 \
+            --set-env-vars="GCP_PROJECT=${GCP_PROJECT},WORKER_ID=cloud-run" \
+            --set-secrets="ELEVENLABS_API_KEY=sessioncast-elevenlabs-api-key:latest" \
             --quiet
 
       - name: Download PWA artifact

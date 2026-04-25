@@ -1,13 +1,22 @@
-"""TTS Worker — FastAPI service that synthesizes audio for a SessionCast episode.
+"""TTS Worker — FastAPI service (Cloud Run) + shared episode processing logic.
 
-Receives Pub/Sub push for `status == "script_ready"`, downloads script.json from
-GCS, synthesizes each line (VOICEVOX for くくり, ElevenLabs IVC for Matthew), merges
-into audio.wav, and uploads back to GCS.
+Pipeline:
+  Phase 1: Agent generates script.json → Firestore status="script_ready"
+  Phase 2: TTS worker (this) claims episode, synthesizes audio, uploads audio.wav
+  Phase 3: Video worker picks up audio_ready episodes
+
+Trigger modes:
+  Cloud Run: POST /pubsub-push  (Pub/Sub push subscription)
+  Local:     local_worker.py polls Firestore directly
+
+Engine routing (per character in script.json):
+  "voicevox"   → VOICEVOX HTTP API (Cloud Run service or local)
+  "elevenlabs" → ElevenLabs IVC (eleven_multilingual_v2 by default)
+  "chirp3"     → Google TTS Chirp 3 (future)
 
 Environment variables:
     GCP_PROJECT         — GCP project ID (required)
     VOICEVOX_URL        — VOICEVOX service URL, default http://localhost:50021
-    VOICEVOX_SPEAKER_ID — VOICEVOX speaker ID for くくり, default 1
     ELEVENLABS_API_KEY  — ElevenLabs API key (optional; falls back to Secret Manager)
 """
 
@@ -18,14 +27,16 @@ import json
 import logging
 import os
 import re
+import socket
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
 from elevenlabs.client import ElevenLabs
 from fastapi import FastAPI, HTTPException, Request
 from google.cloud import firestore, pubsub_v1, secretmanager, storage
+from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 from pydub import AudioSegment
 
 logging.basicConfig(level=logging.INFO)
@@ -33,11 +44,13 @@ log = logging.getLogger(__name__)
 
 GCP_PROJECT = os.environ["GCP_PROJECT"]
 VOICEVOX_URL = os.environ.get("VOICEVOX_URL", "http://localhost:50021")
-VOICEVOX_SPEAKER_ID = int(os.environ.get("VOICEVOX_SPEAKER_ID", "1"))
 MEDIA_BUCKET = f"{GCP_PROJECT}-media"
-ELEVENLABS_VOICE_SECRET = f"projects/{GCP_PROJECT}/secrets/sessioncast-matthew-elevenlabs-voice-id/versions/latest"
 PIPELINE_TOPIC = f"projects/{GCP_PROJECT}/topics/sessioncast-pipeline-events"
-ELEVENLABS_MODEL = "eleven_multilingual_v2"
+ELEVENLABS_VOICE_SECRET = f"projects/{GCP_PROJECT}/secrets/sessioncast-matthew-elevenlabs-voice-id/versions/latest"
+ELEVENLABS_MODEL_DEFAULT = "eleven_multilingual_v2"
+
+# Identifies this worker instance in Firestore
+WORKER_ID = os.environ.get("WORKER_ID", f"local-{socket.gethostname()}")
 
 # Allowlist for episode_id values (prevents path traversal)
 _EPISODE_ID_RE = re.compile(r"^[a-z0-9\-]{1,80}$")
@@ -45,26 +58,37 @@ _EPISODE_ID_RE = re.compile(r"^[a-z0-9\-]{1,80}$")
 app = FastAPI()
 _executor = ThreadPoolExecutor(max_workers=8)
 
-# Cached on first use
-_elevenlabs_voice_id_cache: Optional[str] = None
+# Module-level caches
 _elevenlabs_client_cache: Optional[ElevenLabs] = None
+_elevenlabs_voice_id_cache: Optional[str] = None
 
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
 
 @dataclass
 class ScriptLine:
     index: int
-    speaker: str  # "kukuri" or "matthew"
+    speaker: str
     text: str
     pause_after_ms: int = 300
 
 
-def _get_elevenlabs_voice_id() -> str:
-    global _elevenlabs_voice_id_cache
-    if _elevenlabs_voice_id_cache is None:
-        sm = secretmanager.SecretManagerServiceClient()
-        resp = sm.access_secret_version(request={"name": ELEVENLABS_VOICE_SECRET})
-        _elevenlabs_voice_id_cache = resp.payload.data.decode("utf-8")
-    return _elevenlabs_voice_id_cache
+@dataclass
+class CharacterConfig:
+    engine: str  # "voicevox" | "elevenlabs"
+    params: dict = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Secret / client helpers
+# ---------------------------------------------------------------------------
+
+def _get_secret(secret_id: str) -> str:
+    sm = secretmanager.SecretManagerServiceClient()
+    name = f"projects/{GCP_PROJECT}/secrets/{secret_id}/versions/latest"
+    return sm.access_secret_version(request={"name": name}).payload.data.decode()
 
 
 def _get_elevenlabs_client() -> ElevenLabs:
@@ -75,63 +99,102 @@ def _get_elevenlabs_client() -> ElevenLabs:
     return _elevenlabs_client_cache
 
 
-def _get_secret(secret_id: str) -> str:
-    sm = secretmanager.SecretManagerServiceClient()
-    name = f"projects/{GCP_PROJECT}/secrets/{secret_id}/versions/latest"
-    return sm.access_secret_version(request={"name": name}).payload.data.decode("utf-8")
+def _get_elevenlabs_voice_id() -> str:
+    global _elevenlabs_voice_id_cache
+    if _elevenlabs_voice_id_cache is None:
+        sm = secretmanager.SecretManagerServiceClient()
+        resp = sm.access_secret_version(request={"name": ELEVENLABS_VOICE_SECRET})
+        _elevenlabs_voice_id_cache = resp.payload.data.decode()
+    return _elevenlabs_voice_id_cache
 
 
-def _synthesize_voicevox(text: str) -> bytes:
+# ---------------------------------------------------------------------------
+# Synthesis engines
+# ---------------------------------------------------------------------------
+
+def _synthesize_voicevox(text: str, speaker_id: int) -> bytes:
     with httpx.Client(base_url=VOICEVOX_URL, timeout=30) as client:
-        query_resp = client.post(
-            "/audio_query",
-            params={"text": text, "speaker": VOICEVOX_SPEAKER_ID},
-        )
-        query_resp.raise_for_status()
-        synth_resp = client.post(
+        query = client.post("/audio_query", params={"text": text, "speaker": speaker_id})
+        query.raise_for_status()
+        synth = client.post(
             "/synthesis",
-            params={"speaker": VOICEVOX_SPEAKER_ID},
-            content=query_resp.content,
+            params={"speaker": speaker_id},
+            content=query.content,
             headers={"Content-Type": "application/json"},
         )
-        synth_resp.raise_for_status()
-        return synth_resp.content
+        synth.raise_for_status()
+        return synth.content
 
 
-def _synthesize_elevenlabs(text: str) -> bytes:
+def _synthesize_elevenlabs(text: str, voice_id: Optional[str], model: Optional[str]) -> bytes:
     client = _get_elevenlabs_client()
-    voice_id = _get_elevenlabs_voice_id()
-    audio_chunks = client.text_to_speech.convert(
-        voice_id=voice_id,
+    vid = voice_id or _get_elevenlabs_voice_id()
+    mid = model or ELEVENLABS_MODEL_DEFAULT
+    chunks = client.text_to_speech.convert(
+        voice_id=vid,
         text=text,
-        model_id=ELEVENLABS_MODEL,
+        model_id=mid,
         output_format="pcm_24000",
     )
-    raw_pcm = b"".join(audio_chunks)
-    # Wrap raw PCM (24kHz, 16-bit, mono) in a WAV header via pydub
+    raw_pcm = b"".join(chunks)
     segment = AudioSegment(raw_pcm, sample_width=2, frame_rate=24000, channels=1)
     buf = io.BytesIO()
     segment.export(buf, format="wav")
     return buf.getvalue()
 
 
-def _synthesize_line(line: ScriptLine) -> bytes:
-    if line.speaker == "kukuri":
-        wav_bytes = _synthesize_voicevox(line.text)
-    elif line.speaker == "matthew":
-        wav_bytes = _synthesize_elevenlabs(line.text)
+def _synthesize_line(line: ScriptLine, char_configs: dict[str, CharacterConfig]) -> bytes:
+    config = char_configs.get(line.speaker)
+    if config is None:
+        log.warning("No character config for speaker '%s', skipping line %d", line.speaker, line.index)
+        return b""
+
+    if config.engine == "voicevox":
+        speaker_id = int(config.params.get("speaker_id", 1))
+        wav_bytes = _synthesize_voicevox(line.text, speaker_id)
+    elif config.engine == "elevenlabs":
+        wav_bytes = _synthesize_elevenlabs(
+            line.text,
+            config.params.get("voice_id"),
+            config.params.get("model"),
+        )
     else:
-        log.warning("Unknown speaker %s, skipping line %d", line.speaker, line.index)
+        log.warning("Unknown engine '%s' for speaker '%s'", config.engine, line.speaker)
         return b""
 
     segment = AudioSegment.from_wav(io.BytesIO(wav_bytes))
     if line.pause_after_ms > 0:
-        silence = AudioSegment.silent(duration=line.pause_after_ms)
-        segment = segment + silence
-
+        segment = segment + AudioSegment.silent(duration=line.pause_after_ms)
     buf = io.BytesIO()
     segment.export(buf, format="wav")
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# GCS / Firestore / Pub/Sub
+# ---------------------------------------------------------------------------
+
+def _download_script(episode_id: str) -> tuple[list[ScriptLine], dict[str, CharacterConfig]]:
+    gcs = storage.Client()
+    blob = gcs.bucket(MEDIA_BUCKET).blob(f"episodes/{episode_id}/script.json")
+    data = json.loads(blob.download_as_text())
+
+    char_configs = {
+        name: CharacterConfig(
+            engine=cfg["engine"],
+            params=cfg.get("params", {}),
+        )
+        for name, cfg in data.get("characters", {}).items()
+    }
+    lines = [ScriptLine(**ln) for ln in data["lines"]]
+    return lines, char_configs
+
+
+def _upload_audio(episode_id: str, wav_bytes: bytes) -> None:
+    gcs = storage.Client()
+    blob = gcs.bucket(MEDIA_BUCKET).blob(f"episodes/{episode_id}/audio.wav")
+    blob.upload_from_string(wav_bytes, content_type="audio/wav")
+    log.info("Uploaded audio.wav for %s (%d bytes)", episode_id, len(wav_bytes))
 
 
 def _merge_wav_files(wav_list: list[bytes]) -> bytes:
@@ -144,51 +207,88 @@ def _merge_wav_files(wav_list: list[bytes]) -> bytes:
     return buf.getvalue()
 
 
-def _download_script(episode_id: str) -> list[ScriptLine]:
-    gcs = storage.Client()
-    blob = gcs.bucket(MEDIA_BUCKET).blob(f"episodes/{episode_id}/script.json")
-    data = json.loads(blob.download_as_text())
-    return [ScriptLine(**line) for line in data["lines"]]
-
-
-def _upload_audio(episode_id: str, wav_bytes: bytes) -> None:
-    gcs = storage.Client()
-    blob = gcs.bucket(MEDIA_BUCKET).blob(f"episodes/{episode_id}/audio.wav")
-    blob.upload_from_string(wav_bytes, content_type="audio/wav")
-    log.info("Uploaded audio.wav for episode %s (%d bytes)", episode_id, len(wav_bytes))
-
-
-def _update_firestore(episode_id: str) -> None:
-    db = firestore.Client(project=GCP_PROJECT)
-    db.collection("episodes").document(episode_id).update({"status": "rendering"})
-
-
 def _publish_audio_ready(episode_id: str) -> None:
     publisher = pubsub_v1.PublisherClient()
     msg = json.dumps({"episode_id": episode_id, "status": "audio_ready"}).encode()
     publisher.publish(PIPELINE_TOPIC, msg)
 
 
+# ---------------------------------------------------------------------------
+# Firestore task claiming (atomic, prevents double-processing)
+# ---------------------------------------------------------------------------
+
+def _claim_episode(episode_id: str) -> bool:
+    """Atomically move episode status script_ready → tts_processing.
+    Returns True if this worker successfully claimed the task."""
+    db = firestore.Client(project=GCP_PROJECT)
+    ep_ref = db.collection("episodes").document(episode_id)
+
+    @firestore.transactional
+    def _try_claim(transaction):
+        snap = ep_ref.get(transaction=transaction)
+        if not snap.exists or snap.get("status") != "script_ready":
+            return False
+        transaction.update(ep_ref, {
+            "status": "tts_processing",
+            "tts_worker": WORKER_ID,
+            "tts_claimed_at": SERVER_TIMESTAMP,
+        })
+        return True
+
+    return _try_claim(db.transaction())
+
+
+def _mark_episode_done(episode_id: str) -> None:
+    db = firestore.Client(project=GCP_PROJECT)
+    db.collection("episodes").document(episode_id).update({
+        "status": "audio_ready",
+        "tts_completed_at": SERVER_TIMESTAMP,
+    })
+
+
+def _mark_episode_failed(episode_id: str, error: str) -> None:
+    db = firestore.Client(project=GCP_PROJECT)
+    db.collection("episodes").document(episode_id).update({
+        "status": "tts_failed",
+        "tts_error": error[:500],
+    })
+
+
+# ---------------------------------------------------------------------------
+# Core episode processing
+# ---------------------------------------------------------------------------
+
 def _process_episode(episode_id: str) -> None:
-    log.info("Processing TTS for episode %s", episode_id)
-    lines = _download_script(episode_id)
+    log.info("Processing TTS for episode %s (worker=%s)", episode_id, WORKER_ID)
+    try:
+        lines, char_configs = _download_script(episode_id)
 
-    # Synthesize all lines concurrently using the thread pool
-    loop = asyncio.new_event_loop()
-    futures = [loop.run_in_executor(_executor, _synthesize_line, line) for line in lines]
-    wav_list = loop.run_until_complete(asyncio.gather(*futures))
-    loop.close()
+        loop = asyncio.new_event_loop()
+        futures = [
+            loop.run_in_executor(_executor, _synthesize_line, line, char_configs)
+            for line in lines
+        ]
+        wav_list = loop.run_until_complete(asyncio.gather(*futures))
+        loop.close()
 
-    audio_wav = _merge_wav_files(list(wav_list))
-    _upload_audio(episode_id, audio_wav)
-    _update_firestore(episode_id)
-    _publish_audio_ready(episode_id)
-    log.info("TTS complete for episode %s", episode_id)
+        audio_wav = _merge_wav_files(list(wav_list))
+        _upload_audio(episode_id, audio_wav)
+        _mark_episode_done(episode_id)
+        _publish_audio_ready(episode_id)
+        log.info("TTS complete for episode %s", episode_id)
+    except Exception as exc:
+        log.exception("TTS failed for episode %s", episode_id)
+        _mark_episode_failed(episode_id, str(exc))
+        raise
 
+
+# ---------------------------------------------------------------------------
+# FastAPI endpoints (Cloud Run / Pub/Sub push mode)
+# ---------------------------------------------------------------------------
 
 @app.get("/healthz")
 async def healthz():
-    return {"status": "ok"}
+    return {"status": "ok", "worker_id": WORKER_ID}
 
 
 @app.post("/pubsub-push")
@@ -207,7 +307,10 @@ async def pubsub_push(request: Request):
     if not _EPISODE_ID_RE.match(episode_id):
         raise HTTPException(status_code=400, detail="Invalid episode_id")
 
-    # Run synchronous processing in thread pool so FastAPI stays responsive
+    if not _claim_episode(episode_id):
+        log.info("Episode %s already claimed, skipping", episode_id)
+        return {"skipped": True, "reason": "already_claimed"}
+
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(_executor, _process_episode, episode_id)
     return {"ok": True, "episode_id": episode_id}
