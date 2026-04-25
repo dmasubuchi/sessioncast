@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+.next/
+out/
+dist/
+build/
+*.pyc
+__pycache__/
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+*.secret
+service-account-key.json
+*-credentials.json
+firebase-adminsdk-*.json
+
+# GCP / Firebase
+.firebase/
+.firebaserc
+firebase-debug.log
+
+# Terraform state (keep .tf files, ignore state)
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/.terraform.lock.hcl
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Docker
+*.tar
+
+# Papukaija-specific config (NOT committed to OSS repo)
+config/papukaija/
+personas/
+voice-models/
