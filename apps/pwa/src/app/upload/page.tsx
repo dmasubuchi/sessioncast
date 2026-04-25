@@ -5,7 +5,7 @@ import { createEpisode, addImagesToEpisode, type ImageCategory } from "@/lib/fir
 import { uploadImages, type UploadProgress } from "@/lib/storage";
 
 type CategoryOption = {
-  value: ImageCategory | "slides";
+  value: ImageCategory;
   label: string;
   emoji: string;
   description: string;
@@ -13,7 +13,7 @@ type CategoryOption = {
 
 const CATEGORIES: CategoryOption[] = [
   {
-    value: "slides",
+    value: "slide",
     label: "スライド",
     emoji: "📊",
     description: "セッションのプレゼンスライド",
@@ -43,7 +43,7 @@ interface PreviewFile {
 export default function UploadPage() {
   const [episodeId, setEpisodeId] = useState<string>("");
   const [seriesId, setSeriesId] = useState<string>("google-radio");
-  const [selectedCategory, setSelectedCategory] = useState<ImageCategory>("slides");
+  const [selectedCategory, setSelectedCategory] = useState<ImageCategory>("slide");
   const [previews, setPreviews] = useState<PreviewFile[]>([]);
   const [uploadState, setUploadState] = useState<UploadState>("idle");
   const [errors, setErrors] = useState<string[]>([]);
@@ -110,7 +110,7 @@ export default function UploadPage() {
       }
     };
 
-    const folder = selectedCategory === "slides" ? "slides" : selectedCategory === "atmosphere" ? "atmosphere" : "general";
+    const folder = selectedCategory === "slide" ? "slides" : selectedCategory === "atmosphere" ? "atmosphere" : "general";
 
     try {
       const uploaded = await uploadImages(
